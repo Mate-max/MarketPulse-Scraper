@@ -3,6 +3,8 @@ from database.db import init_db, SessionLocal, ProductModel
 from models.item import ScrapedItem
 from services.telegram_bot import TelegramNotifier
 from core.logger import logger
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from config.settings import settings
 
 async def process_item(db_session, item: ScrapedItem, notifier: TelegramNotifier):
     """ამოწმებს ბაზაში პროდუქტს, ანახლებს ფასს და აგზავნის ალერტს საჭიროებისას"""
@@ -32,39 +34,49 @@ async def process_item(db_session, item: ScrapedItem, notifier: TelegramNotifier
         )
         db_session.add(new_product)
     db_session.commit()
-    
-async def main():
-    logger.info("🚀 MarketPulse Pipeline გაშვიებულია...")
-    
-    # 1. SQL ტაბულების ინიციალიზაცია MSSQL-ში
-    init_db()
 
-    # 2. ინსტანციების მომზადება
-    notifier = TelegramNotifier()
+async def run_pipeline():
+    """სკრეიპინგის და ბაზაში განახლების ერთი ციკლი"""
+    logger.info("🔄 იწყება სკრეიპინგის პერიოდული ციკლი...")
     db = SessionLocal()
+    notifier = TelegramNotifier()
 
     try:
-        # სატესტო მონაცემი (რომ შევამოწმოთ ბაზაც და Telegram-იც)
         test_item = ScrapedItem(
             title="Sony PlayStation 5 Digital Edition",
-            price=1499.00,
+            price=1399.00,
             old_price=1799.00,
             currency="GEL",
             source_site="test_store",
             url="https://example.com/ps5-test-item",
             is_available=True
         )
-
-        logger.info("📦 სატესტო მონაცემის დამუშავება...")
         await process_item(db, test_item, notifier)
-        
-        logger.info("✅ ტესტმა წარმატებით ჩაიარა!")
-
+        logger.info("✅ ციკლი წარმატებით დასრულდა.")
     except Exception as e:
-        logger.error(f"❌ შეცდომა გაშვებისას: {e}")
+        logger.error(f"❌ შეცდომა ციკლის შესრულებისას: {e}")
     finally:
         db.close()
 
+async def main():
+    logger.info("🚀 MarketPulse Pipeline გაშვებულია...")
+    init_db()
 
+    await run_pipeline()
+
+    scheduler = AsyncIOScheduler()
+    scheduler.add_job(
+        run_pipeline,
+        'interval',
+        minutes=settings.SCRAPE_INTERVAL_MINUTES
+    )
+    scheduler.start()
+    logger.info(f"⏰ Scheduler აქტიურია! ციკლი გაიშვება ყოველ {settings.SCRAPE_INTERVAL_MINUTES} წუთში.")
+
+    try:
+        while True:
+            await asyncio.sleep(3600)
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("🛑 აპლიკაცია გაჩერდა.")
 if __name__ == "__main__":
     asyncio.run(main())
