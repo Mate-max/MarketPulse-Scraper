@@ -5,6 +5,7 @@ from services.telegram_bot import TelegramNotifier
 from core.logger import logger
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from config.settings import settings
+from services.exporter import DataExporter
 
 async def process_item(db_session, item: ScrapedItem, notifier: TelegramNotifier):
     """ამოწმებს ბაზაში პროდუქტს, ანახლებს ფასს და აგზავნის ალერტს საჭიროებისას"""
@@ -52,6 +53,8 @@ async def run_pipeline():
             is_available=True
         )
         await process_item(db, test_item, notifier)
+        exporter = DataExporter()
+        exporter.export_to_excel(db)
         logger.info("✅ ციკლი წარმატებით დასრულდა.")
     except Exception as e:
         logger.error(f"❌ შეცდომა ციკლის შესრულებისას: {e}")
