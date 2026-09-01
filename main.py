@@ -20,7 +20,7 @@ async def process_item(db_session, item: ScrapedItem, notifier: TelegramNotifier
             
             # შეტყობინების გაგზავნა
             if hasattr(notifier, 'send_price_drop_alert'):
-                notifier.send_price_drop_alert(
+                await notifier.send_price_drop_alert(
                     product_title=item.title,
                     old_price=existing_product.price,
                     new_price=item.price,
