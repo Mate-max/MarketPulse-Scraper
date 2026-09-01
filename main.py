@@ -6,6 +6,7 @@ from core.logger import logger
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from config.settings import settings
 from services.exporter import DataExporter
+from scrapers.zoomer_scraper import ZoommerScraper
 
 async def process_item(db_session, item: ScrapedItem, notifier: TelegramNotifier):
     """ამოწმებს ბაზაში პროდუქტს, ანახლებს ფასს და აგზავნის ალერტს საჭიროებისას"""
@@ -41,18 +42,17 @@ async def run_pipeline():
     logger.info("🔄 იწყება სკრეიპინგის პერიოდული ციკლი...")
     db = SessionLocal()
     notifier = TelegramNotifier()
+    zoomer = ZoommerScraper()
 
     try:
-        test_item = ScrapedItem(
-            title="Sony PlayStation 5 Digital Edition",
-            price=1399.00,
-            old_price=1799.00,
-            currency="GEL",
-            source_site="test_store",
-            url="https://example.com/ps5-test-item",
-            is_available=True
-        )
-        await process_item(db, test_item, notifier)
+        # რეალური პროდუქტის ბმული Zoomer-იდან
+        target_url = "https://zoommer.ge/playstation/sony-playstation-ps5-slim-1tb-white-p38718"
+
+        scraped_item = await zoomer.scrape_product(target_url)
+
+        if scraped_item:
+            await process_item(db, scraped_item, notifier)
+
         exporter = DataExporter()
         exporter.export_to_excel(db)
         logger.info("✅ ციკლი წარმატებით დასრულდა.")
