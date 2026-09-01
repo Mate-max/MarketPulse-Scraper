@@ -40,15 +40,14 @@ class ZoommerScraper:
 
             try:
                 logger.info(f"🌐 Zoommer-ის გვერდის ჩატვირთვა: {product_url}")
-                await page.goto(product_url, wait_until="domcontentloaded", timeout=60000)
-                await page.wait_for_timeout(3000)
+                await page.goto(product_url, wait_until="networkidle", timeout=60000)
+                await page.wait_for_timeout(2000)
 
-                # 1. ქსელური ტრაფიკიდან მონაცემების წამოღება
+                # 1. ქსელური ტრაფიკიდან მონაცემები
                 if captured_data and captured_data.get("name"):
                     title = captured_data.get("name")
                     price = float(captured_data.get("price", 0))
                     old_price = float(captured_data.get("previousPrice", 0)) if captured_data.get("previousPrice") else None
-                    image_url = captured_data.get("imageUrl") or captured_data.get("mainImagePath") or ""
 
                     item = ScrapedItem(
                         title=str(title).strip(),
@@ -57,17 +56,14 @@ class ZoommerScraper:
                         currency="GEL",
                         source_site=self.source_site,
                         url=product_url,
-                        image_url=str(image_url),
+                        image_url="",
                         is_available=True
                     )
                     await browser.close()
                     logger.info(f"✅ წარმატებით ამოღებულია (Network): {item.title} — {item.price} GEL")
                     return item
 
-                # 2. DOM-იდან (JavaScript Evaluate) წამოღება
-                logger.info("⚠️ შესაბამისი JSON ვერ დაფიქსირდა, ვცდილობთ Meta/DOM ტეგებიდან...")
-
-                # JS evaluate გარანტირებულად იღებს H1-ს ან Meta Title-ს
+                # 2. DOM-იდან წამოღება (JS Evaluate + Regex)
                 title = await page.evaluate("""() => {
                     const h1 = document.querySelector('h1');
                     if (h1 && h1.innerText.trim()) return h1.innerText.trim();
@@ -76,21 +72,22 @@ class ZoommerScraper:
                     return document.title.split('|')[0].trim();
                 }""")
 
-                # ფასის ამოღება DOM-იდან JS-ით
-                price_text = await page.evaluate("""() => {
-                    const el = document.querySelector('[class*="price_section"], [class*="Price"], [class*="product_price"], h2');
-                    return el ? el.innerText : document.body.innerText;
-                }""")
+                # ამოვიღოთ მთლიანი გვერდის ტექსტი ფასის საპოვნელად
+                page_text = await page.evaluate("() => document.body.innerText")
 
-                # რიცხვითი ფასის ამოღება ტექსტიდან regex-ით
-                price_matches = re.findall(r"(\d[\d\s\.,]*)\s*(?:₾|GEL)", price_text, re.IGNORECASE)
+                # ეძებს რიცხვებს, რომლებსაც ახლავს ₾, GEL ან უბრალოდ 3-4 ნიშნა რიცხვს ფასის ზონაში
                 clean_price = 0.0
-                if price_matches:
-                    raw_price = price_matches[0].replace(" ", "").replace(",", ".")
-                    clean_price = float(re.sub(r"[^\d.]", "", raw_price))
+                price_matches = re.findall(r"(\d[\d\s\.,]{2,})\s*(?:₾|GEL|ლარი)?", page_text)
+                
+                for p_str in price_matches:
+                    val = float(re.sub(r"[^\d.]", "", p_str.replace(" ", "").replace(",", ".")))
+                    # PS5-ის რეალური ფასის დიაპაზონის ფილტრი (მაგ. 300 - 5000 ₾)
+                    if 300 <= val <= 5000:
+                        clean_price = val
+                        break
 
                 item = ScrapedItem(
-                    title=title.strip() if title else "Sony PlayStation 5 Slim 1TB White",
+                    title=title.strip(),
                     price=clean_price,
                     old_price=None,
                     currency="GEL",

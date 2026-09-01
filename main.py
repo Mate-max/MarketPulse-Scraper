@@ -1,12 +1,13 @@
 import asyncio
 from database.db import init_db, SessionLocal, ProductModel
 from models.item import ScrapedItem
-from services.telegram_bot import TelegramNotifier
+from core.notifier import TelegramNotifier
 from core.logger import logger
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from config.settings import settings
 from services.exporter import DataExporter
 from scrapers.zoomer_scraper import ZoommerScraper
+
 
 async def process_item(db_session, item: ScrapedItem, notifier: TelegramNotifier):
     """ამოწმებს ბაზაში პროდუქტს, ანახლებს ფასს და აგზავნის ალერტს საჭიროებისას"""
@@ -16,26 +17,42 @@ async def process_item(db_session, item: ScrapedItem, notifier: TelegramNotifier
         # თუ ფასი შემცირდა, გავაგზავნოთ Telegram alert
         if item.price < existing_product.price:
             logger.info(f"🔥 ფასდაკლება დაფიქსირდა: {item.title} ({existing_product.price} -> {item.price})")
-            await notifier.send_price_alert(item, old_price=existing_product.price)
+            
+            # შეტყობინების გაგზავნა
+            if hasattr(notifier, 'send_price_drop_alert'):
+                notifier.send_price_drop_alert(
+                    product_title=item.title,
+                    old_price=existing_product.price,
+                    new_price=item.price,
+                    url=item.url
+                )
+            elif hasattr(notifier, 'send_price_alert'):
+                await notifier.send_price_alert(item, old_price=existing_product.price)
+
             existing_product.old_price = existing_product.price
             existing_product.price = item.price
         else:
+            # თუ ფასი იგივეა ან გაიზარდა, ვანახლებთ დასახელებას/ფასს
+            existing_product.title = item.title
+            existing_product.price = item.price
             logger.info(f"ℹ️ {item.title} — ფასი უცვლელია ({item.price} GEL)")
     else:
         # ახალი პროდუქტის ბაზაში დამატება
         logger.info(f"➕ ახალი პროდუქტის დამატება: {item.title}")
         new_product = ProductModel(
-            title = item.title,
-            price = item.price,
-            old_price = item.old_price,
-            currency = item.currency,
-            source_site = item.source_site,
-            url = item.url,
-            image_url = item.image_url,
-            is_available = item.is_available
+            title=item.title,
+            price=item.price,
+            old_price=item.old_price,
+            currency=item.currency,
+            source_site=item.source_site,
+            url=item.url,
+            image_url=item.image_url,
+            is_available=item.is_available
         )
         db_session.add(new_product)
+
     db_session.commit()
+
 
 async def run_pipeline():
     """სკრეიპინგის და ბაზაში განახლების ერთი ციკლი"""
@@ -45,9 +62,7 @@ async def run_pipeline():
     zoomer = ZoommerScraper()
 
     try:
-        # რეალური პროდუქტის ბმული Zoomer-იდან
         target_url = "https://zoommer.ge/playstation/sony-playstation-ps5-slim-1tb-white-p38718"
-
         scraped_item = await zoomer.scrape_product(target_url)
 
         if scraped_item:
@@ -60,6 +75,7 @@ async def run_pipeline():
         logger.error(f"❌ შეცდომა ციკლის შესრულებისას: {e}")
     finally:
         db.close()
+
 
 async def main():
     logger.info("🚀 MarketPulse Pipeline გაშვებულია...")
@@ -81,5 +97,7 @@ async def main():
             await asyncio.sleep(3600)
     except (KeyboardInterrupt, SystemExit):
         logger.info("🛑 აპლიკაცია გაჩერდა.")
+
+
 if __name__ == "__main__":
     asyncio.run(main())
