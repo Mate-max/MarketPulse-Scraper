@@ -62,11 +62,18 @@ async def run_pipeline():
     zoomer = ZoommerScraper()
 
     try:
-        target_url = "https://zoommer.ge/playstation/sony-playstation-ps5-slim-1tb-white-p38718"
-        scraped_item = await zoomer.scrape_product(target_url)
+        products = db.query(ProductModel).all()
 
-        if scraped_item:
-            await process_item(db, scraped_item, notifier)
+        if not products:
+            logger.info("ℹ️ ბაზაში პროდუქტები არ არის.")
+            return
+
+        for prod in products:
+            logger.info(f"🔍 მოწმდება: {prod.title or prod.url}")
+            scraped_item = await zoomer.scrape_product(prod.url)
+
+            if scraped_item:
+                await process_item(db, scraped_item, notifier)
 
         exporter = DataExporter()
         exporter.export_to_excel(db)
