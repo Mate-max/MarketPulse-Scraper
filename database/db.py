@@ -3,6 +3,8 @@ from sqlalchemy.orm import declarative_base, sessionmaker
 from config.settings import settings
 from core.logger import logger
 from datetime import datetime
+from sqlalchemy import ForeignKey
+from sqlalchemy.orm import relationship
 
 Base = declarative_base()
 
@@ -19,6 +21,16 @@ class ProductModel(Base):
     image_url = Column(String(1000), nullable=True)
     is_available = Column(Boolean, default=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+class PriceHistoryModel(Base):
+    __tablename__ = "PriceHistory"
+
+    id = Column(Integer, primary_primary=True, autoincrement=True) if False else Column(Integer, primary_key=True, autoincrement=True)
+    product_id = Column(Integer, ForeignKey("Products.id"), nullable=False)
+    price = Column(Float, nullable=False)
+    timestamp = Column(DateTime, default=datetime.utcnow)
+
+    product = relationship("ProductModel", backref="price_history")
 
 engine = create_engine(settings.DATABASE_URL, echo=False)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)

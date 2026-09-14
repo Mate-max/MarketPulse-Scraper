@@ -1,3 +1,4 @@
+import os
 import asyncio
 import logging
 from telegram import Update
@@ -8,6 +9,8 @@ from database.db import SessionLocal, ProductModel
 from scrapers.zoomer_scraper import ZoommerScraper
 from core.notifier import TelegramNotifier
 from main import process_item
+from utils.chart import generate_price_chart
+from database.db import PriceHistoryModel
 
 # ლოგირების ჩართვა ტერმინალისთვის
 logging.basicConfig(
@@ -127,6 +130,48 @@ async def delete_product(update: Update, context: ContextTypes.DEFAULT_TYPE):
     finally:
         db.close()
 
+async def chart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """"გამოაქვს ფასების ისტორიის გრაფიკი: /chart <ID>"""
+    if not context.args:
+        await update.message.reply_text("⚠️ <b>გთხოვთ მიუთითოთ პროდუქტის ID!</b>\nმაგალითად: <code>/chart 1</code>", parse_mode="HTML")
+        return
+
+    try:
+        prod_id = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("❌ <b>ID უნდა იყოს ციფრი!</b>", parse_mode="HTML") 
+        return
+
+    db = SessionLocal()
+    try:
+        product = db.query(ProductModel).filter(ProductModel.id == prod_id).first()
+        if not product:
+            await update.message.reply_text(f"❌ <b>პროდუქტი ID={prod_id} ვერ მოიძებნა.</b>", parse_mode="HTML")
+            return
+
+        # იღებს ფასების ისტორიას (დალაგებულს თარიღის მიხედვით)
+        # თუ PriceHistoryModel გაქვს:
+        history = db.query(PriceHistoryModel).filter(PriceHistoryModel.product_id == prod_id).order_by(PriceHistoryModel.timestamp.asc()).all()
+
+        if not history or len(history) < 2:
+            await update.message.reply_text("ℹ️ <b>გრაფის ასაგებად საკმარისი ისტორია არ არსებობს (საჭიროა მინიმუმ 2 ჩანაწერი).</b>", parse_mode="HTML")
+            return
+
+        data = [(h.timestamp, h.price) for h in history]
+        chart_file = generate_price_chart(product.title, data, output_filename=f"chart_{prod_id}.png")
+
+        if chart_file and os.path.exists(chart_file):
+            with open(chart_file, 'rb') as photo:
+                await update.message.reply_photo(photo=photo, caption=f"📊 <b>ფასების ცვლილების გრაფიკი:</b>\n{product.title}", parse_mode="HTML")
+            os.remove(chart_file) # დროებითი ფაილის წაშლა
+        else:
+            await update.message.reply_text("❌ <b>გრაფიკის შექმნა ვერ მოხერხდა.</b>", parse_mode="HTML")
+
+    except Exception as e:
+        await update.message.reply_text(f"❌ <b>შეცდომა გრაფიკის შექმნისას:</b> {e}", parse_mode="HTML")
+    finally:
+        db.close()
+
 if __name__ == "__main__":
     app = ApplicationBuilder().token(settings.TELEGRAM_BOT_TOKEN).build()
 
@@ -135,6 +180,7 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("add", add_product))
     app.add_handler(CommandHandler("list", list_products))
     app.add_handler(CommandHandler("delete", delete_product))
+    app.add_handler(CommandHandler("chart", chart_command))
 
     print("🤖 ბოტი გაეშვა...")
     app.run_polling()

@@ -1,5 +1,5 @@
 import asyncio
-from database.db import init_db, SessionLocal, ProductModel
+from database.db import init_db, SessionLocal, ProductModel, PriceHistoryModel, init_db
 from models.item import ScrapedItem
 from core.notifier import TelegramNotifier
 from core.logger import logger
@@ -9,50 +9,51 @@ from services.exporter import DataExporter
 from scrapers.zoomer_scraper import ZoommerScraper
 
 
-async def process_item(db_session, item: ScrapedItem, notifier: TelegramNotifier):
-    """ამოწმებს ბაზაში პროდუქტს, ანახლებს ფასს და აგზავნის ალერტს საჭიროებისას"""
-    existing_product = db_session.query(ProductModel).filter(ProductModel.url == item.url).first()
+async def process_item(db, scraped_item, notifier):
+    """ამუშავებს დასკრეიპილ ნივთს: ინახავს ბაზაში და წერს ისტორიას"""
+    product = db.query(ProductModel).filter(ProductModel.url == scraped_item.url).first()
 
-    if existing_product:
-        # თუ ფასი შემცირდა, გავაგზავნოთ Telegram alert
-        if item.price < existing_product.price:
-            logger.info(f"🔥 ფასდაკლება დაფიქსირდა: {item.title} ({existing_product.price} -> {item.price})")
+    if not product:
+        # ახალი პროდუქტის შექმნა
+        product = ProductModel(
+            title=scraped_item.title,
+            price=scraped_item.price,
+            old_price=scraped_item.old_price,
+            currency=scraped_item.currency,
+            source_site=scraped_item.source_site,
+            url=scraped_item.url,
+            image_url=scraped_item.image_url,
+            is_available=scraped_item.is_available
+        )
+        db.add(product)
+        db.commit()
+        db.refresh(product)
+        
+        # ისტორიაში პირველი ფასის ჩაწერა
+        history = PriceHistoryModel(product_id=product.id, price=scraped_item.price)
+        db.add(history)
+        db.commit()
+
+        logger.info(f"➕ დაემატა ახალი პროდუქტი: {product.title}")
+    else:
+        # თუ ფასი შეიცვალა
+        if product.price != scraped_item.price:
+            logger.info(f"📉 ფასი შეიცვალა პროდუქტზე: {product.title} ({product.price} -> {scraped_item.price})")
             
             # შეტყობინების გაგზავნა
-            if hasattr(notifier, 'send_price_drop_alert'):
-                await notifier.send_price_drop_alert(
-                    product_title=item.title,
-                    old_price=existing_product.price,
-                    new_price=item.price,
-                    url=item.url
-                )
-            elif hasattr(notifier, 'send_price_alert'):
-                await notifier.send_price_alert(item, old_price=existing_product.price)
-
-            existing_product.old_price = existing_product.price
-            existing_product.price = item.price
+            await notifier.notify_price_drop(product, scraped_item.price)
+            
+            # ფასის განახლება პროდუქტის ცხრილში
+            product.old_price = product.price
+            product.price = scraped_item.price
+            
+            # ახალი ფასის ჩაწერა ისტორიაში
+            history = PriceHistoryModel(product_id=product.id, price=scraped_item.price)
+            db.add(history)
+            
+            db.commit()
         else:
-            # თუ ფასი იგივეა ან გაიზარდა, ვანახლებთ დასახელებას/ფასს
-            existing_product.title = item.title
-            existing_product.price = item.price
-            logger.info(f"ℹ️ {item.title} — ფასი უცვლელია ({item.price} GEL)")
-    else:
-        # ახალი პროდუქტის ბაზაში დამატება
-        logger.info(f"➕ ახალი პროდუქტის დამატება: {item.title}")
-        new_product = ProductModel(
-            title=item.title,
-            price=item.price,
-            old_price=item.old_price,
-            currency=item.currency,
-            source_site=item.source_site,
-            url=item.url,
-            image_url=item.image_url,
-            is_available=item.is_available
-        )
-        db_session.add(new_product)
-
-    db_session.commit()
-
+            logger.info(f"ℹ️ ფასი უცვლელია: {product.title}")
 
 async def run_pipeline():
     """სკრეიპინგის და ბაზაში განახლების ერთი ციკლი"""
