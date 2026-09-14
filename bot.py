@@ -77,12 +77,64 @@ async def add_product(update: Update, context: ContextTypes.DEFAULT_TYPE):
     finally:
         db.close()
 
+async def list_products(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """"გამოაქვს ყველა მონიტორინგზე მყოფი პროდუქტის სია"""
+    db = SessionLocal()
+    try:
+        products = db.query(ProductModel).all()
+        if not products:
+            await update.message.reply_text("📭 <b>ბაზაში პროდუქტები არ არის.</b>", parse_mode="HTML")
+            return
+
+        msg = "📋 <b>მონიტორინგზე მყოფი პროდუქტები:</b>\n\n"
+        for p in products:
+            msg += f"<b>ID: {p.id}</b> | {p.title[:30]}...\n💰 <b>{p.price} GEL</b>\n🔗 <a href='{p.url}'>ლინკი</a>\n\n"
+
+        msg += "💡 <i>წასაშლელად გამოიყენეთ: /delete &lt;ID&gt;</i>"
+        await update.message.reply_text(msg, parse_mode = "HTML", disable_web_page_preview = True)
+    except Exception as e:
+        await update.message.reply_text(f"❌ <b>შეცდომა სიის წამოღებისას:</b> {e}", parse_mode="HTML")
+
+    finally:
+        db.close()
+
+async def delete_product(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """"შლის პროდუქტს ID-ის მიხედვით /delete<ID>"""
+    if not context.args:
+        await update.message.reply_text("⚠️ <b>გთხოვთ მიუთითოთ პროდუქტის ID!</b>\nმაგალითად: <code>/delete 1</code>", parse_mode="HTML")
+        return
+
+    try:
+        prod_id = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("❌ <b>ID უნდა იყოს ციფრი!</b>", parse_mode="HTML")
+        return
+
+    db = SessionLocal()
+    try:
+        product = db.query(ProductModel).filter(ProductModel.id == prod_id).first()
+        if not product:
+            await update.message.reply_text(f"❌ <b>პროდუქტი ID={prod_id} ვერ მოიძებნა.</b>", parse_mode="HTML")
+            return
+
+        title = product.title
+        db.delete(product)
+        db.commit()
+
+        await update.message.reply_text(f"🗑️ <b>პროდუქტი წარმატებით წაიშალა:</b>\n{title}", parse_mode="HTML")
+    except Exception as e:
+        await update.message.reply_text(f"❌ <b>შეცდომა წაშლისას:</b> {e}", parse_mode="HTML")
+    finally:
+        db.close()
+
 if __name__ == "__main__":
     app = ApplicationBuilder().token(settings.TELEGRAM_BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("check", check))
     app.add_handler(CommandHandler("add", add_product))
+    app.add_handler(CommandHandler("list", list_products))
+    app.add_handler(CommandHandler("delete", delete_product))
 
     print("🤖 ბოტი გაეშვა...")
     app.run_polling()
