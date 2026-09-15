@@ -1,36 +1,37 @@
 import os
-import asyncio
 import logging
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 from config.settings import settings
-from main import run_pipeline
-from database.db import SessionLocal, ProductModel
+from database.db import SessionLocal, ProductModel, PriceHistoryModel
 from scrapers.zoomer_scraper import ZoommerScraper
 from core.notifier import TelegramNotifier
-from main import process_item
 from utils.chart import generate_price_chart
-from database.db import PriceHistoryModel
 
-# ლოგირების ჩართვა ტერმინალისთვის
+# ლოგირება
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO
 )
 
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """მისალმება და ინსტრუქცია"""
+    msg = (
+        "👋 <b>გამარჯობა! მე ვარ MarketPulse-ის ბოტი.</b>\n\n"
+        "მე დაგეხმარები Zoommer.ge-ზე ფასების თვალყურის დევნებაში.\n\n"
+        "<b>ხელმისაწვდომი ბრძანებები:</b>\n"
+        "🔹 /add &lt;URL&gt; - პროდუქტის დამატება\n"
+        "🔹 /list - პროდუქტების სიის ნახვა\n"
+        "🔹 /chart &lt;ID&gt; - ფასების გრაფიკი\n"
+        "🔹 /delete &lt;ID&gt; - პროდუქტის წაშლა\n"
+        "🔹 /check - ფასების ხელით გადამოწმება\n"
+        "🔹 /status - ბოტის სტატუსი"
+    )
+    await update.message.reply_text(msg, parse_mode="HTML")
+
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """ამოწმებს ბოტის სტატუსს"""
     await update.message.reply_text("🟢 <b>MarketPulse სკრეიპერი აქტიურია!</b>", parse_mode="HTML")
-
-async def check(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """ხელით გააშვებინებს ფასების გადამოწმებას"""
-    await update.message.reply_text("🔍 <b>ფასების გადამოწმება დაიწყო...</b>", parse_mode="HTML")
-    
-    try:
-        await run_pipeline()
-        await update.message.reply_text("✅ <b>გადამოწმება წარმატებით დასრულდა!</b>", parse_mode="HTML")
-    except Exception as e:
-        await update.message.reply_text(f"❌ <b>შეცდომა გადამოწმებისას:</b> {e}", parse_mode="HTML")
 
 async def add_product(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """ამატებს ახალ პროდუქტს მონიტორინგისთვის: /add <URL>"""
@@ -51,7 +52,6 @@ async def add_product(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     db = SessionLocal()
     try:
-        # შევამოწმოთ უკვე ხომ არ არის ბაზაში
         existing = db.query(ProductModel).filter(ProductModel.url == raw_url).first()
         if existing:
             await update.message.reply_text(
@@ -60,13 +60,30 @@ async def add_product(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        # დავასკრეიპოთ ახალი პროდუქტი
         zoomer = ZoommerScraper()
         notifier = TelegramNotifier()
         scraped_item = await zoomer.scrape_product(raw_url)
 
         if scraped_item:
-            await process_item(db, scraped_item, notifier)
+            # პროდუქტის დამატება ბაზაში
+            product = ProductModel(
+                title=scraped_item.title,
+                price=scraped_item.price,
+                old_price=scraped_item.old_price,
+                currency=scraped_item.currency,
+                source_site=scraped_item.source_site,
+                url=scraped_item.url,
+                image_url=scraped_item.image_url,
+                is_available=scraped_item.is_available
+            )
+            db.add(product)
+            db.commit()
+            db.refresh(product)
+            
+            history = PriceHistoryModel(product_id=product.id, price=scraped_item.price)
+            db.add(history)
+            db.commit()
+
             await update.message.reply_text(
                 f"✅ <b>პროდუქტი წარმატებით დაემატა!</b>\n\n"
                 f"📦 <b>{scraped_item.title}</b>\n"
@@ -81,7 +98,7 @@ async def add_product(update: Update, context: ContextTypes.DEFAULT_TYPE):
         db.close()
 
 async def list_products(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """"გამოაქვს ყველა მონიტორინგზე მყოფი პროდუქტის სია"""
+    """გამოაქვს ყველა მონიტორინგზე მყოფი პროდუქტის სია"""
     db = SessionLocal()
     try:
         products = db.query(ProductModel).all()
@@ -94,15 +111,14 @@ async def list_products(update: Update, context: ContextTypes.DEFAULT_TYPE):
             msg += f"<b>ID: {p.id}</b> | {p.title[:30]}...\n💰 <b>{p.price} GEL</b>\n🔗 <a href='{p.url}'>ლინკი</a>\n\n"
 
         msg += "💡 <i>წასაშლელად გამოიყენეთ: /delete &lt;ID&gt;</i>"
-        await update.message.reply_text(msg, parse_mode = "HTML", disable_web_page_preview = True)
+        await update.message.reply_text(msg, parse_mode="HTML", disable_web_page_preview=True)
     except Exception as e:
         await update.message.reply_text(f"❌ <b>შეცდომა სიის წამოღებისას:</b> {e}", parse_mode="HTML")
-
     finally:
         db.close()
 
 async def delete_product(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """"შლის პროდუქტს ID-ის მიხედვით /delete<ID>"""
+    """შლის პროდუქტს ID-ის მიხედვით /delete <ID>"""
     if not context.args:
         await update.message.reply_text("⚠️ <b>გთხოვთ მიუთითოთ პროდუქტის ID!</b>\nმაგალითად: <code>/delete 1</code>", parse_mode="HTML")
         return
@@ -131,7 +147,7 @@ async def delete_product(update: Update, context: ContextTypes.DEFAULT_TYPE):
         db.close()
 
 async def chart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """"გამოაქვს ფასების ისტორიის გრაფიკი: /chart <ID>"""
+    """გამოაქვს ფასების ისტორიის გრაფიკი: /chart <ID>"""
     if not context.args:
         await update.message.reply_text("⚠️ <b>გთხოვთ მიუთითოთ პროდუქტის ID!</b>\nმაგალითად: <code>/chart 1</code>", parse_mode="HTML")
         return
@@ -149,8 +165,6 @@ async def chart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"❌ <b>პროდუქტი ID={prod_id} ვერ მოიძებნა.</b>", parse_mode="HTML")
             return
 
-        # იღებს ფასების ისტორიას (დალაგებულს თარიღის მიხედვით)
-        # თუ PriceHistoryModel გაქვს:
         history = db.query(PriceHistoryModel).filter(PriceHistoryModel.product_id == prod_id).order_by(PriceHistoryModel.timestamp.asc()).all()
 
         if not history or len(history) < 2:
@@ -163,7 +177,7 @@ async def chart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if chart_file and os.path.exists(chart_file):
             with open(chart_file, 'rb') as photo:
                 await update.message.reply_photo(photo=photo, caption=f"📊 <b>ფასების ცვლილების გრაფიკი:</b>\n{product.title}", parse_mode="HTML")
-            os.remove(chart_file) # დროებითი ფაილის წაშლა
+            os.remove(chart_file)
         else:
             await update.message.reply_text("❌ <b>გრაფიკის შექმნა ვერ მოხერხდა.</b>", parse_mode="HTML")
 
@@ -171,16 +185,3 @@ async def chart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ <b>შეცდომა გრაფიკის შექმნისას:</b> {e}", parse_mode="HTML")
     finally:
         db.close()
-
-if __name__ == "__main__":
-    app = ApplicationBuilder().token(settings.TELEGRAM_BOT_TOKEN).build()
-
-    app.add_handler(CommandHandler("status", status))
-    app.add_handler(CommandHandler("check", check))
-    app.add_handler(CommandHandler("add", add_product))
-    app.add_handler(CommandHandler("list", list_products))
-    app.add_handler(CommandHandler("delete", delete_product))
-    app.add_handler(CommandHandler("chart", chart_command))
-
-    print("🤖 ბოტი გაეშვა...")
-    app.run_polling()
